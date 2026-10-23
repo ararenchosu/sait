@@ -15,13 +15,15 @@ def get_secret_key():
 
 app.secret_key = get_secret_key()
 
-WORKSPACE = Path("./workspace")
+# ✅ 絶対パスに統一して重複を防止
+BASE_DIR = Path(__file__).resolve().parent
+WORKSPACE = BASE_DIR / "workspace"
 WORKSPACE.mkdir(exist_ok=True)
 
 running_processes = {}
 
 # ============================================================
-# 🔐 認証 — Cookieを確実に通す
+# 🔐 認証
 # ============================================================
 @app.before_request
 def check_auth():
@@ -40,20 +42,15 @@ def login():
     print(f"[DEBUG] 入力: [{input_pass}] / 正: [{correct_pass}]")
     
     if input_pass == correct_pass:
-        # ✅ Cookieを最も緩い設定で確実にセット
         resp = make_response(redirect("/editor"))
         resp.set_cookie(
-            "dev_auth",
-            "ok",
+            "dev_auth", "ok",
             max_age=86400 * 30,
-            samesite="None",  # ← FadeHostのようなクロスドメイン環境ではこれが必須
-            secure=True,      # ← HTTPS通信なのでTrue
-            httponly=True
+            samesite="None", secure=True, httponly=True
         )
-        print("[DEBUG] ✅ ログイン成功 → Cookie送信")
+        print("[DEBUG] ✅ ログイン成功")
         return resp
     
-    print("[DEBUG] ❌ パスワード不一致")
     return render_template("login.html", error="❌ パスワードが違います"), 403
 
 @app.route("/editor")
@@ -104,15 +101,17 @@ def delete_file():
     return jsonify({"success": False})
 
 # ============================================================
-# ▶️ 実行
+# ▶️ 実行 — 絶対パスで正しく指定
 # ============================================================
 @app.route("/api/run", methods=["POST"])
 def run_code():
     data = request.json
     filename = data.get("filename", "main.py")
     path = WORKSPACE / filename
+    
+    print(f"[DEBUG] 実行パス: {path}")  # 確認用
     if not path.exists():
-        return jsonify({"error": "ファイルが見つかりません"})
+        return jsonify({"error": f"ファイルが見つかりません: {path}"})
     
     session_id = str(uuid.uuid4())
     proc_ref = {"output": [], "exit_code": None}
@@ -121,7 +120,7 @@ def run_code():
         try:
             proc = subprocess.Popen(
                 ["python3", str(path)],
-                cwd=str(WORKSPACE),
+                cwd=str(WORKSPACE),  # ✅ 作業ディレクトリを正しく指定
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -175,5 +174,6 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     pw = get_password()
     print(f"🚀 起動 :{port}")
+    print(f"📁 作業フォルダ: {WORKSPACE}")
     print(f"🔐 パスワード: [{pw}]")
     app.run(host="0.0.0.0", port=port, debug=False)
