@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, make_response
+from flask import Flask, render_template, request, jsonify, redirect, make_response
 import os
 import subprocess
 import uuid
@@ -11,10 +11,7 @@ def get_password():
     return os.getenv("APP_PASSWORD", "pass123")
 
 def get_secret_key():
-    key = os.getenv("SECRET_KEY")
-    if not key:
-        key = "dev_fixed_key_20261023"
-    return key
+    return os.getenv("SECRET_KEY", "dev_fixed_key_20261023")
 
 app.secret_key = get_secret_key()
 
@@ -24,14 +21,12 @@ WORKSPACE.mkdir(exist_ok=True)
 running_processes = {}
 
 # ============================================================
-# 🔐 認証
+# 🔐 認証 — Cookieを確実に通す
 # ============================================================
 @app.before_request
 def check_auth():
-    # 除外パス
-    if request.path in ["/login", "/static", "/favicon.ico"]:
+    if request.path in ["/login", "/static"]:
         return
-    # Cookie確認
     if not request.cookies.get("dev_auth"):
         return redirect("/login")
 
@@ -45,10 +40,20 @@ def login():
     print(f"[DEBUG] 入力: [{input_pass}] / 正: [{correct_pass}]")
     
     if input_pass == correct_pass:
+        # ✅ Cookieを最も緩い設定で確実にセット
         resp = make_response(redirect("/editor"))
-        resp.set_cookie("dev_auth", "ok", max_age=86400*30, httponly=True, samesite="Lax")
+        resp.set_cookie(
+            "dev_auth",
+            "ok",
+            max_age=86400 * 30,
+            samesite="None",  # ← FadeHostのようなクロスドメイン環境ではこれが必須
+            secure=True,      # ← HTTPS通信なのでTrue
+            httponly=True
+        )
+        print("[DEBUG] ✅ ログイン成功 → Cookie送信")
         return resp
     
+    print("[DEBUG] ❌ パスワード不一致")
     return render_template("login.html", error="❌ パスワードが違います"), 403
 
 @app.route("/editor")
