@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>自作開発環境</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:sans-serif;}
+:root{--bg:#0f1929;--card:#142838;--border:#244058;--accent:#2584ff;--green:#00d16f;--red:#ff4d4f;--text:#e6edf3;}
+body{background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;}
+
+header{padding:0.8rem 1.5rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;}
+h1{font-size:1.2rem;}
+.controls{display:flex;gap:0.5rem;flex-wrap:wrap;}
+button{padding:0.6rem 1rem;border:none;border-radius:6px;font-weight:bold;cursor:pointer;transition:0.2s;}
+.run{background:var(--green);color:black;}
+.run:hover{background:#00b85f;}
+.stop{background:var(--red);color:white;}
+.stop:hover{background:#d6393c;}
+.save{background:var(--accent);color:white;}
+.save:hover{background:#1a75f0;}
+.upload{background:#3a4a66;color:white;}
+.upload:hover{background:#4a5a76;}
+
+main{display:flex;flex:1;overflow:hidden;}
+.sidebar{width:200px;border-right:1px solid var(--border);padding:1rem;overflow-y:auto;}
+.file-item{padding:0.5rem;margin-bottom:0.3rem;border-radius:4px;cursor:pointer;}
+.file-item:hover{background:var(--border);}
+.file-item.active{background:var(--accent);}
+
+.editor-area{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+.filename-bar{padding:0.6rem 1rem;border-bottom:1px solid var(--border);display:flex;gap:0.5rem;align-items:center;}
+#filename{background:var(--card);border:1px solid var(--border);border-radius:4px;padding:0.4rem 0.8rem;color:white;flex:1;}
+#code{flex:1;background:#0a121f;border:none;padding:1rem;color:#e6edf3;font-family:monospace;font-size:14px;line-height:1.5;resize:none;outline:none;}
+
+.terminal{height:200px;border-top:1px solid var(--border);background:#0a121f;padding:1rem;overflow-y:auto;font-family:monospace;font-size:13px;}
+.line{margin-bottom:2px;white-space:pre-wrap;}
+.error{color:var(--red);}
+.success{color:var(--green);}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🐍 Python 開発環境</h1>
+  <div class="controls">
+    <button class="upload" onclick="document.getElementById('fileInput').click()">📂 アップロード</button>
+    <input type="file" id="fileInput" style="display:none" onchange="uploadFile(event)">
+    <button class="save" onclick="saveFile()">💾 保存</button>
+    <button class="run" onclick="runCode()">▶ 実行</button>
+    <button class="stop" onclick="stopCode()">⏹ 停止</button>
+  </div>
+</header>
+
+<main>
+  <div class="sidebar">
+    <h4 style="margin-bottom:0.8rem">📁 ファイル一覧</h4>
+    <div id="fileList"></div>
+  </div>
+  
+  <div class="editor-area">
+    <div class="filename-bar">
+      <input type="text" id="filename" value="main.py">
+    </div>
+    <textarea id="code" placeholder="コードを書く👇">print("こんにちは！自作環境だよ✨")
+for i in range(5):
+    print(f"カウント: {i+1}")
+</textarea>
+  </div>
+</main>
+
+<div class="terminal" id="terminal">
+  <div class="line">ターミナル — 実行結果がここに表示されます</div>
+</div>
+
+<script>
+let currentFile = "main.py";
+let currentSession = null;
+
+async function loadFiles(){
+  const res=await fetch("/api/files");
+  const d=await res.json();
+  document.getElementById("fileList").innerHTML=d.files.map(f=>
+    `<div class="file-item" onclick="openFile('${f.name}')">${f.name}</div>`
+  ).join("");
+}
+
+async function openFile(name){
+  currentFile=name;
+  document.getElementById("filename").value=name;
+  const res=await fetch("/api/file/read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:name})});
+  const d=await res.json();
+  if(d.code)document.getElementById("code").value=d.code;
+  loadFiles();
+}
+
+async function saveFile(){
+  const code=document.getElementById("code").value;
+  const name=document.getElementById("filename").value;
+  currentFile=name;
+  await fetch("/api/file/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:name,code})});
+  appendLine("✅ 保存: "+name,"success");
+  loadFiles();
+}
+
+async function uploadFile(e){
+  const file=e.target.files[0];
+  if(!file)return;
+  const form=new FormData();
+  form.append("file",file);
+  const res=await fetch("/api/upload",{method:"POST",body:form});
+  const d=await res.json();
+  if(d.success){
+    appendLine("✅ アップロード: "+d.filename,"success");
+    loadFiles();
+    openFile(d.filename);
+  }
+}
+
+async function runCode(){
+  await saveFile();
+  clearTerminal();
+  appendLine("▶ 実行中: "+currentFile);
+  
+  const res=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({filename:currentFile})});
+  const d=await res.json();
+  if(d.error)return appendLine("❌ "+d.error,"error");
+  
+  currentSession=d.session_id;
+  pollOutput();
+}
+
+async function pollOutput(){
+  if(!currentSession)return;
+  const res=await fetch("/api/output?sid="+encodeURIComponent(currentSession));
+  const d=await res.json();
+  d.output.forEach(line=>appendLine(line));
+  if(d.running){
+    setTimeout(pollOutput,500);
+  }else{
+    appendLine(d.exit_code===0?"✅ 完了":"❌ 終了コード: "+d.exit_code,d.exit_code===0?"success":"error");
+    currentSession=null;
+  }
+}
+
+async function stopCode(){
+  if(!currentSession)return;
+  await fetch("/api/stop",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sid:currentSession})});
+  appendLine("⏹ 停止しました","success");
+  currentSession=null;
+}
+
+function appendLine(text,cls=""){
+  const t=document.getElementById("terminal");
+  const d=document.createElement("div");
+  d.className="line "+cls;
+  d.textContent=text;
+  t.appendChild(d);
+  t.scrollTop=t.scrollHeight;
+}
+
+function clearTerminal(){
+  document.getElementById("terminal").innerHTML="";
+}
+
+loadFiles();
+</script>
+
+</body>
+</html>
