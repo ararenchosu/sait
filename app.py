@@ -15,12 +15,27 @@ def get_secret_key():
 
 app.secret_key = get_secret_key()
 
-# ✅ 絶対パスに統一して重複を防止
 BASE_DIR = Path(__file__).resolve().parent
 WORKSPACE = BASE_DIR / "workspace"
 WORKSPACE.mkdir(exist_ok=True)
 
 running_processes = {}
+
+# ✅ 起動時に自動でパッケージインストール
+def install_requirements():
+    req_file = WORKSPACE / "requirements.txt"
+    if req_file.exists():
+        print("📦 必要なパッケージをインストール中...")
+        try:
+            subprocess.run(
+                ["pip3", "install", "-r", str(req_file)],
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            print("✅ インストール完了")
+        except Exception as e:
+            print(f"⚠️ インストールエラー: {e}")
 
 # ============================================================
 # 🔐 認証
@@ -101,7 +116,7 @@ def delete_file():
     return jsonify({"success": False})
 
 # ============================================================
-# ▶️ 実行 — 絶対パスで正しく指定
+# ▶️ 実行
 # ============================================================
 @app.route("/api/run", methods=["POST"])
 def run_code():
@@ -109,7 +124,7 @@ def run_code():
     filename = data.get("filename", "main.py")
     path = WORKSPACE / filename
     
-    print(f"[DEBUG] 実行パス: {path}")  # 確認用
+    print(f"[DEBUG] 実行パス: {path}")
     if not path.exists():
         return jsonify({"error": f"ファイルが見つかりません: {path}"})
     
@@ -120,7 +135,7 @@ def run_code():
         try:
             proc = subprocess.Popen(
                 ["python3", str(path)],
-                cwd=str(WORKSPACE),  # ✅ 作業ディレクトリを正しく指定
+                cwd=str(WORKSPACE),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -176,4 +191,8 @@ if __name__ == "__main__":
     print(f"🚀 起動 :{port}")
     print(f"📁 作業フォルダ: {WORKSPACE}")
     print(f"🔐 パスワード: [{pw}]")
+    
+    # ✅ 初回起動時にdiscord.pyを自動インストール
+    install_requirements()
+    
     app.run(host="0.0.0.0", port=port, debug=False)
