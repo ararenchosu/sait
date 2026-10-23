@@ -7,8 +7,15 @@ import time
 from pathlib import Path
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "dev_env_key_change_me")
-APP_PASSWORD = os.getenv("APP_PASSWORD", "pass123")
+
+# ✅ 起動後に読み込むように修正
+def get_password():
+    return os.getenv("APP_PASSWORD", "pass123")
+
+def get_secret_key():
+    return os.getenv("SECRET_KEY", "dev_key_change_me")
+
+app.secret_key = get_secret_key()
 
 # 作業フォルダ
 WORKSPACE = Path("./workspace")
@@ -30,11 +37,15 @@ def auth():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        if request.form.get("password") == APP_PASSWORD:
+        input_pass = request.form.get("password", "")
+        correct_pass = get_password()
+        print(f"[DEBUG] 入力: {input_pass} / 正しい: {correct_pass}")  # デバッグ用
+        
+        if input_pass == correct_pass:
             resp = render_template("editor.html")
             resp.set_cookie("dev_auth", "ok", max_age=86400*30)
             return resp
-        return "❌ パスワードが違います"
+        return "❌ パスワードが違います — 再確認してください", 403
     return render_template("login.html")
 
 # ============================================================
@@ -110,7 +121,12 @@ def run_code():
                 text=True,
                 bufsize=1
             )
-            running_processes[session_id] = proc
+            running_processes[session_id] = {
+                "proc": proc,
+                "output": [],
+                "exit_code": None,
+                "thread": None
+            }
             
             for line in iter(proc.stdout.readline, ""):
                 if session_id in running_processes:
@@ -123,11 +139,7 @@ def run_code():
             if session_id in running_processes:
                 running_processes[session_id]["output"].append(f"エラー: {e}")
     
-    running_processes[session_id] = {
-        "output": [],
-        "exit_code": None,
-        "thread": threading.Thread(target=execute, daemon=True)
-    }
+    running_processes[session_id]["thread"] = threading.Thread(target=execute, daemon=True)
     running_processes[session_id]["thread"].start()
     
     return jsonify({"session_id": session_id})
@@ -151,9 +163,12 @@ def stop_process():
     sid = data.get("sid")
     if sid in running_processes:
         proc = running_processes[sid]
-        if isinstance(proc, dict) and hasattr(proc, "kill"):
-            proc.kill()
-        running_processes[sid]["exit_code"] = -1
+        if "proc" in proc:
+            try:
+                proc["proc"].terminate()
+            except:
+                pass
+        proc["exit_code"] = -1
         return jsonify({"success": True})
     return jsonify({"success": False})
 
@@ -169,4 +184,5 @@ def upload_file():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     print(f"🚀 開発環境起動 :{port}")
+    print(f"🔐 パスワード(確認用): {get_password()}")  # ✅ 起動時に表示
     app.run(host="0.0.0.0", port=port, debug=False)
