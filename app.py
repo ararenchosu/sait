@@ -1,72 +1,73 @@
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, redirect, url_for, make_response
 import os
 import subprocess
 import uuid
 import threading
-import time
 from pathlib import Path
 
 app = Flask(__name__)
 
-# ✅ 起動後に読み込むように修正
 def get_password():
     return os.getenv("APP_PASSWORD", "pass123")
 
 def get_secret_key():
-    return os.getenv("SECRET_KEY", "dev_key_change_me")
+    key = os.getenv("SECRET_KEY")
+    if not key:
+        key = "dev_fixed_key_20261023"
+    return key
 
 app.secret_key = get_secret_key()
 
-# 作業フォルダ
 WORKSPACE = Path("./workspace")
 WORKSPACE.mkdir(exist_ok=True)
 
-# 実行中プロセス管理
 running_processes = {}
 
 # ============================================================
 # 🔐 認証
 # ============================================================
 @app.before_request
-def auth():
-    if request.path in ["/login", "/static"]:
+def check_auth():
+    # 除外パス
+    if request.path in ["/login", "/static", "/favicon.ico"]:
         return
+    # Cookie確認
     if not request.cookies.get("dev_auth"):
-        return render_template("login.html")
+        return redirect("/login")
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method == "POST":
-        input_pass = request.form.get("password", "")
-        correct_pass = get_password()
-        print(f"[DEBUG] 入力: {input_pass} / 正しい: {correct_pass}")  # デバッグ用
-        
-        if input_pass == correct_pass:
-            resp = render_template("editor.html")
-            resp.set_cookie("dev_auth", "ok", max_age=86400*30)
-            return resp
-        return "❌ パスワードが違います — 再確認してください", 403
-    return render_template("login.html")
+    if request.method == "GET":
+        return render_template("login.html")
+    
+    input_pass = request.form.get("password", "")
+    correct_pass = get_password()
+    print(f"[DEBUG] 入力: [{input_pass}] / 正: [{correct_pass}]")
+    
+    if input_pass == correct_pass:
+        resp = make_response(redirect("/editor"))
+        resp.set_cookie("dev_auth", "ok", max_age=86400*30, httponly=True, samesite="Lax")
+        return resp
+    
+    return render_template("login.html", error="❌ パスワードが違います"), 403
 
-# ============================================================
-# 🖥️ ページ
-# ============================================================
-@app.route("/")
-def index():
+@app.route("/editor")
+def editor():
     return render_template("editor.html")
 
+@app.route("/")
+def index():
+    return redirect("/login")
+
 # ============================================================
-# 📁 ファイル管理API
+# 📁 ファイル管理
 # ============================================================
 @app.route("/api/files")
 def list_files():
     files = []
     for p in WORKSPACE.glob("**/*"):
         if p.is_file():
-            files.append({
-                "name": str(p.relative_to(WORKSPACE)),
-                "size": p.stat().st_size
-            })
+            files.append({"name": str(p.relative_to(WORKSPACE)), "size": p.stat().st_size})
     return jsonify({"files": files})
 
 @app.route("/api/file/save", methods=["POST"])
@@ -98,20 +99,20 @@ def delete_file():
     return jsonify({"success": False})
 
 # ============================================================
-# ▶️ 実行・ターミナルAPI
+# ▶️ 実行
 # ============================================================
 @app.route("/api/run", methods=["POST"])
 def run_code():
     data = request.json
     filename = data.get("filename", "main.py")
     path = WORKSPACE / filename
-    
     if not path.exists():
         return jsonify({"error": "ファイルが見つかりません"})
     
     session_id = str(uuid.uuid4())
+    proc_ref = {"output": [], "exit_code": None}
     
-    def execute():
+    def task():
         try:
             proc = subprocess.Popen(
                 ["python3", str(path)],
@@ -121,61 +122,45 @@ def run_code():
                 text=True,
                 bufsize=1
             )
-            running_processes[session_id] = {
-                "proc": proc,
-                "output": [],
-                "exit_code": None,
-                "thread": None
-            }
-            
+            proc_ref["proc"] = proc
             for line in iter(proc.stdout.readline, ""):
-                if session_id in running_processes:
-                    running_processes[session_id]["output"].append(line)
-            
-            ret = proc.wait()
-            if session_id in running_processes:
-                running_processes[session_id]["exit_code"] = ret
+                proc_ref["output"].append(line)
+            proc_ref["exit_code"] = proc.wait()
         except Exception as e:
-            if session_id in running_processes:
-                running_processes[session_id]["output"].append(f"エラー: {e}")
+            proc_ref["output"].append(f"エラー: {e}")
+            proc_ref["exit_code"] = -1
     
-    running_processes[session_id]["thread"] = threading.Thread(target=execute, daemon=True)
-    running_processes[session_id]["thread"].start()
-    
+    running_processes[session_id] = proc_ref
+    threading.Thread(target=task, daemon=True).start()
     return jsonify({"session_id": session_id})
 
 @app.route("/api/output")
 def get_output():
     sid = request.args.get("sid")
     if sid not in running_processes:
-        return jsonify({"error": "セッションが存在しません"})
-    
-    proc = running_processes[sid]
+        return jsonify({"error": "セッションなし"})
+    p = running_processes[sid]
     return jsonify({
-        "output": proc["output"],
-        "running": proc["exit_code"] is None,
-        "exit_code": proc["exit_code"]
+        "output": p["output"],
+        "running": p["exit_code"] is None,
+        "exit_code": p["exit_code"]
     })
 
 @app.route("/api/stop", methods=["POST"])
 def stop_process():
-    data = request.json
-    sid = data.get("sid")
-    if sid in running_processes:
-        proc = running_processes[sid]
-        if "proc" in proc:
-            try:
-                proc["proc"].terminate()
-            except:
-                pass
-        proc["exit_code"] = -1
+    sid = request.json.get("sid")
+    if sid in running_processes and "proc" in running_processes[sid]:
+        try:
+            running_processes[sid]["proc"].terminate()
+        except: pass
+        running_processes[sid]["exit_code"] = -1
         return jsonify({"success": True})
     return jsonify({"success": False})
 
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
     if "file" not in request.files:
-        return jsonify({"error": "ファイルがありません"})
+        return jsonify({"error": "ファイルなし"})
     f = request.files["file"]
     path = WORKSPACE / f.filename
     f.save(str(path))
@@ -183,6 +168,7 @@ def upload_file():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
-    print(f"🚀 開発環境起動 :{port}")
-    print(f"🔐 パスワード(確認用): {get_password()}")  # ✅ 起動時に表示
+    pw = get_password()
+    print(f"🚀 起動 :{port}")
+    print(f"🔐 パスワード: [{pw}]")
     app.run(host="0.0.0.0", port=port, debug=False)
