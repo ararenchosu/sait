@@ -3,14 +3,8 @@ from discord.ext import commands
 import asyncio
 import os
 import threading
-from dotenv import load_dotenv
 
-# ✅ 外部ファイル（.env）から設定を読み込み
-load_dotenv()
-
-# ============================================================
-# Intents 設定
-# ============================================================
+# ✅ FadeHostの環境変数を直接読み込む
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -54,9 +48,10 @@ class MyBot(commands.Bot):
 def run_web():
     try:
         from web.app import app as flask_app
+        port = int(os.getenv("WEB_PORT", 8080))
         flask_app.run(
             host="0.0.0.0",
-            port=int(os.getenv("WEB_PORT", 8080)),
+            port=port,
             debug=False,
             use_reloader=False
         )
@@ -67,19 +62,18 @@ def run_web():
 # メイン実行
 # ============================================================
 async def main():
-    # ✅ ウェブサーバーを別スレッドで起動
+    # ✅ ウェブサーバー起動
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
-    print(f"✅ ウェブサーバー起動 — ポート {os.getenv('WEB_PORT', 8080)}")
+    port = int(os.getenv("WEB_PORT", 8080))
+    print(f"✅ ウェブサーバー起動 — ポート {port}")
 
-    # ✅ トークン取得（外部.envから）
+    # ✅ FadeHostの環境変数からトークン取得
     token = os.getenv("DISCORD_TOKEN")
     if not token:
-        print("❌ エラー: .env に DISCORD_TOKEN を設定してください")
-        print("   例: DISCORD_TOKEN=xxxxxxxxxxx")
+        print("❌ エラー: FadeHostの環境変数に DISCORD_TOKEN を設定してください")
         return
 
-    # ✅ Bot起動
     await bot.start(token)
 
 bot = MyBot()
